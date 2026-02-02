@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSocket } from '../contexts/SocketContext';
-import { getValidMoves, wouldBlockAllPaths, checkWinCondition } from '../utils/gameLogic';
+import { getValidMoves, isWallPlacementConflicting, wouldBlockAllPaths, checkWinCondition } from '../utils/gameLogic';
 import Cell from './Cell';
 import Pawn from './Pawn';
 import Wall from './Wall';
@@ -12,6 +12,7 @@ export default function Board() {
   const [selectedPawn, setSelectedPawn] = useState(null);
   const [isWallMode, setIsWallMode] = useState(false);
   const [previewWall, setPreviewWall] = useState(null);
+  const [wallOrientation, setWallOrientation] = useState('horizontal');
   const [pawns, setPawns] = useState([
     { id: 1, row: 0, col: 4, player: 1 }, // Player 1 starts at top
     { id: 2, row: 8, col: 4, player: 2 }  // Player 2 starts at bottom
@@ -22,33 +23,64 @@ export default function Board() {
   const [winner, setWinner] = useState(null);
 
   useEffect(() => {
+    if (!isWallMode) return;
+
+    const onKeyDown = (e) => {
+      if (e.key === 'r' || e.key === 'R') {
+        setWallOrientation((prev) => (prev === 'horizontal' ? 'vertical' : 'horizontal'));
+        setPreviewWall(null);
+      }
+      if (e.key === 'Escape') {
+        setIsWallMode(false);
+        setPreviewWall(null);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isWallMode]);
+
+  useEffect(() => {
     if (!socket) return;
 
     const handlePlayerMove = (moveData) => {
-      const { pawnId, newRow, newCol, player } = moveData;
-      const updatedPawns = pawns.map(pawn => 
-        pawn.player === player ? { ...pawn, row: newRow, col: newCol } : pawn
-      );
-      setPawns(updatedPawns);
-      
-      // Check for win condition
-      const winResult = checkWinCondition(updatedPawns);
-      if (winResult) {
-        setWinner(winResult);
-      } else {
-        setCurrentPlayer(prev => prev === 1 ? 2 : 1);
-      }
+      const { newRow, newCol, player } = moveData;
+
+      setPawns((prevPawns) => {
+        const current = prevPawns.find((p) => p.player === player);
+        if (current && current.row === newRow && current.col === newCol) return prevPawns; // ignore echo
+
+        const updatedPawns = prevPawns.map((pawn) =>
+          pawn.player === player ? { ...pawn, row: newRow, col: newCol } : pawn
+        );
+
+        const winResult = checkWinCondition(updatedPawns);
+        if (winResult) {
+          setWinner(winResult);
+        } else {
+          setCurrentPlayer((prev) => (prev === 1 ? 2 : 1));
+        }
+
+        return updatedPawns;
+      });
     };
 
     const handleWallPlaced = (wallData) => {
       const { row, col, orientation, player } = wallData;
-      const newWall = { row, col, orientation, id: Date.now(), player };
-      setWalls(prev => [...prev, newWall]);
-      setWallCounts(prev => ({ 
-        ...prev, 
-        [player]: prev[player] - 1 
-      }));
-      setCurrentPlayer(prev => prev === 1 ? 2 : 1);
+      setWalls((prevWalls) => {
+        const alreadyThere = prevWalls.some(
+          (w) => w.row === row && w.col === col && w.orientation === orientation
+        );
+        if (alreadyThere) return prevWalls; // ignore echo (also avoids double-decrement / double-toggle)
+
+        setWallCounts((prev) => ({
+          ...prev,
+          [player]: prev[player] - 1
+        }));
+        setCurrentPlayer((prev) => (prev === 1 ? 2 : 1));
+
+        return [...prevWalls, { row, col, orientation, id: Date.now(), player }];
+      });
     };
 
     const handleGameState = (gameState) => {
@@ -56,6 +88,7 @@ export default function Board() {
       setWalls(gameState.walls);
       setWallCounts(gameState.wallCounts);
       setCurrentPlayer(gameState.currentPlayer);
+      setWinner(checkWinCondition(gameState.pawns));
     };
 
     socket.on('player-move', handlePlayerMove);
@@ -83,6 +116,9 @@ export default function Board() {
   const handleWallSlotClick = (row, col, orientation) => {
     if (!isWallMode) return;
     
+    const isMyTurn = !currentRoom || playerId === currentPlayer;
+    if (!isMyTurn) return;
+
     if (canPlaceWall(row, col, orientation) && wallCounts[currentPlayer] > 0) {
       const newWall = { row, col, orientation, id: Date.now(), player: currentPlayer };
       
@@ -93,6 +129,7 @@ export default function Board() {
         [currentPlayer]: prev[currentPlayer] - 1 
       }));
       setPreviewWall(null);
+      setCurrentPlayer(prev => prev === 1 ? 2 : 1);
       
       // Send wall placement to server if online
       if (currentRoom && playerId === currentPlayer) {
@@ -102,9 +139,6 @@ export default function Board() {
           orientation,
           player: currentPlayer
         });
-      } else {
-        // Offline mode - switch turns locally
-        setCurrentPlayer(prev => prev === 1 ? 2 : 1);
       }
     }
   };
@@ -117,12 +151,8 @@ export default function Board() {
       if (row < 0 || row >= 8 || col < 0 || col >= 8) return false;
     }
 
-    // Check if wall already exists at this position
-    const wallExists = walls.some(wall => 
-      wall.row === row && wall.col === col && wall.orientation === orientation
-    );
-    
-    if (wallExists) return false;
+    // Check overlap/crossing
+    if (isWallPlacementConflicting(row, col, orientation, walls)) return false;
 
     // Check if wall would block all paths for either player
     const wouldBlockPlayer1 = wouldBlockAllPaths(row, col, orientation, pawns, walls, 1);
@@ -179,10 +209,10 @@ export default function Board() {
         newCol: col,
         player: pawn.player
       });
-    } else {
-      // Offline mode - switch turns locally
-      setCurrentPlayer(prev => prev === 1 ? 2 : 1);
     }
+
+    // Switch turns locally (keeps offline working and avoids waiting on server echo)
+    setCurrentPlayer(prev => prev === 1 ? 2 : 1);
   };
 
   const getPossibleMoves = (pawnId) => {
@@ -201,35 +231,21 @@ export default function Board() {
 
   const renderWallSlots = () => {
     const slots = [];
-    
-    // Horizontal wall slots
+
+    // Wall slots for selected orientation only (reduces hover targets)
     for (let row = 0; row < 8; row++) {
       for (let col = 0; col < 8; col++) {
-        if (canPlaceWall(row, col, 'horizontal')) {
+        if (canPlaceWall(row, col, wallOrientation)) {
           slots.push(
             <WallSlot
-              key={`h-${row}-${col}`}
+              key={`${wallOrientation}-${row}-${col}`}
               row={row}
               col={col}
-              orientation="horizontal"
+              orientation={wallOrientation}
               onClick={handleWallSlotClick}
-            />
-          );
-        }
-      }
-    }
-    
-    // Vertical wall slots
-    for (let row = 0; row < 8; row++) {
-      for (let col = 0; col < 8; col++) {
-        if (canPlaceWall(row, col, 'vertical')) {
-          slots.push(
-            <WallSlot
-              key={`v-${row}-${col}`}
-              row={row}
-              col={col}
-              orientation="vertical"
-              onClick={handleWallSlotClick}
+              onHover={(isHovering) => {
+                setPreviewWall(isHovering ? { row, col, orientation: wallOrientation } : null);
+              }}
             />
           );
         }
@@ -282,6 +298,7 @@ export default function Board() {
               onClick={() => {
                 setIsWallMode(!isWallMode);
                 setSelectedPawn(null);
+                setPreviewWall(null);
               }}
               disabled={currentRoom && playerId !== currentPlayer}
               className={`
@@ -296,10 +313,41 @@ export default function Board() {
             >
               {isWallMode ? '壁配置モード' : '移動モード'}
             </button>
-            <div className="flex items-center text-lg font-medium text-gray-700">
-              残り壁数: {wallCounts[1]}/{wallCounts[2]}
+            {isWallMode && (
+              <button
+                onClick={() => {
+                  setWallOrientation((prev) => (prev === 'horizontal' ? 'vertical' : 'horizontal'));
+                  setPreviewWall(null);
+                }}
+                disabled={currentRoom && playerId !== currentPlayer}
+                className={`
+                  px-5 py-3 rounded-lg font-semibold text-lg border-2
+                  bg-white text-gray-700 border-gray-400
+                  ${currentRoom && playerId !== currentPlayer ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50 active:scale-95'}
+                  transition-all
+                `}
+                title="壁の向きを切り替え"
+              >
+                {wallOrientation === 'horizontal' ? '横壁 ―' : '縦壁 |'}
+              </button>
+            )}
+            <div className="flex items-center gap-3 text-lg font-medium text-gray-700">
+              <span className="flex items-center gap-2">
+                <span className="w-3 h-3 rounded-full bg-blue-500" />
+                {wallCounts[1]}
+              </span>
+              <span className="flex items-center gap-2">
+                <span className="w-3 h-3 rounded-full bg-red-500" />
+                {wallCounts[2]}
+              </span>
             </div>
           </div>
+
+          {isWallMode && (
+            <div className="text-sm text-gray-600">
+              壁配置: クリックで設置 / Rで向きを切替 / Escで移動モード
+            </div>
+          )}
         </div>
       )}
       
@@ -334,6 +382,8 @@ export default function Board() {
         {walls.map(wall => (
           <Wall key={wall.id} wall={wall} />
         ))}
+
+        {previewWall && <Wall wall={previewWall} isPreview />}
         
         {isWallMode && renderWallSlots()}
       </div>

@@ -1,7 +1,15 @@
-export default function WallSlot({ row, col, orientation, onClick, isPreview }) {
+export default function WallSlot({ row, col, orientation, onClick, onHover, isPreview }) {
   const handleClick = (e) => {
     e.stopPropagation();
     onClick(row, col, orientation);
+  };
+
+  const handleMouseEnter = () => {
+    onHover?.(true);
+  };
+
+  const handleMouseLeave = () => {
+    onHover?.(false);
   };
 
   if (orientation === 'horizontal') {
@@ -16,6 +24,8 @@ export default function WallSlot({ row, col, orientation, onClick, isPreview }) 
           left: `${col * 48}px`
         }}
         onClick={handleClick}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
       />
     );
   } else {
@@ -30,6 +40,8 @@ export default function WallSlot({ row, col, orientation, onClick, isPreview }) 
           left: `${col * 48 + 48 - 6}px`
         }}
         onClick={handleClick}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
       />
     );
   }

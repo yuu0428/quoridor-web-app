@@ -42,6 +42,21 @@ export const isWallBlocking = (fromRow, fromCol, toRow, toCol, walls) => {
   return false;
 };
 
+export const isWallPlacementConflicting = (row, col, orientation, walls) => {
+  return walls.some((wall) => {
+    // Same orientation: disallow exact overlap + half-overlap (offset by 1)
+    if (wall.orientation === orientation) {
+      if (orientation === 'horizontal') {
+        return wall.row === row && (wall.col === col || wall.col === col - 1 || wall.col === col + 1);
+      }
+      return wall.col === col && (wall.row === row || wall.row === row - 1 || wall.row === row + 1);
+    }
+
+    // Different orientation: disallow crossing at the same slot
+    return wall.row === row && wall.col === col;
+  });
+};
+
 // Get all valid moves for a pawn (including jumps)
 export const getValidMoves = (pawn, pawns, walls) => {
   const moves = [];
@@ -68,17 +83,32 @@ export const getValidMoves = (pawn, pawns, walls) => {
       const jumpRow = newRow + dr;
       const jumpCol = newCol + dc;
       
-      // Check if jump destination is within board
-      if (jumpRow < 0 || jumpRow >= 9 || jumpCol < 0 || jumpCol >= 9) return;
-      
-      // Check if wall blocks jump
-      if (isWallBlocking(newRow, newCol, jumpRow, jumpCol, walls)) return;
-      
-      // Check if jump destination is free
-      const jumpOccupied = pawns.find(p => p.row === jumpRow && p.col === jumpCol);
-      if (!jumpOccupied) {
-        moves.push([jumpRow, jumpCol]);
+      const jumpInBounds = jumpRow >= 0 && jumpRow < 9 && jumpCol >= 0 && jumpCol < 9;
+      const jumpBlocked = !jumpInBounds || isWallBlocking(newRow, newCol, jumpRow, jumpCol, walls);
+
+      if (!jumpBlocked) {
+        // Check if jump destination is free
+        const jumpOccupied = pawns.find(p => p.row === jumpRow && p.col === jumpCol);
+        if (!jumpOccupied) {
+          moves.push([jumpRow, jumpCol]);
+          return;
+        }
       }
+
+      // Jump is not possible (edge / wall / occupied) -> diagonal moves
+      const diagonals =
+        dr !== 0
+          ? [[0, -1], [0, 1]] // moving vertically -> can go left/right around the pawn
+          : [[-1, 0], [1, 0]]; // moving horizontally -> can go up/down around the pawn
+
+      diagonals.forEach(([pdr, pdc]) => {
+        const diagRow = newRow + pdr;
+        const diagCol = newCol + pdc;
+        if (diagRow < 0 || diagRow >= 9 || diagCol < 0 || diagCol >= 9) return;
+        if (isWallBlocking(newRow, newCol, diagRow, diagCol, walls)) return;
+        const diagOccupied = pawns.find(p => p.row === diagRow && p.col === diagCol);
+        if (!diagOccupied) moves.push([diagRow, diagCol]);
+      });
     }
   });
   
@@ -117,13 +147,7 @@ export const wouldBlockAllPaths = (row, col, orientation, pawns, walls, playerId
       if (nextRow < 0 || nextRow >= 9 || nextCol < 0 || nextCol >= 9) return;
       if (visited.has(`${nextRow},${nextCol}`)) return;
       if (isWallBlocking(currentRow, currentCol, nextRow, nextCol, testWalls)) return;
-      
-      // Don't path through other pawns
-      const blockedByPawn = pawns.some(p => 
-        p.row === nextRow && p.col === nextCol && p.player !== playerId
-      );
-      if (blockedByPawn) return;
-      
+
       queue.push([nextRow, nextCol]);
     });
   }
