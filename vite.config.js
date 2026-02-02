@@ -4,7 +4,9 @@ import legacy from '@vitejs/plugin-legacy'
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/quoridor-web-app/',
+  // Vercel (and most hosts) serve from site root. GitHub Pages needs a repo subpath base.
+  // Set VITE_BASE in the build environment if you want a non-root base.
+  base: process.env.VITE_BASE ?? '/',
   plugins: [
     react(),
     legacy({
