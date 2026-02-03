@@ -166,7 +166,7 @@ export default function Board() {
     
     // Only allow selecting own pawn and only on your turn
     const isMyTurn = !currentRoom || playerId === currentPlayer;
-    const isMyPawn = !currentRoom || pawn.player === playerId;
+    const isMyPawn = currentRoom ? pawn.player === playerId : pawn.player === currentPlayer;
     
     if (!isMyTurn || !isMyPawn) return;
     
